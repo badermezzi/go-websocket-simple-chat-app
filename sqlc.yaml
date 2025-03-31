@@ -1,0 +1,13 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    queries: "db/query/" # Directory for your .sql query files
+    schema: "db/migrations/" # Directory with your schema migration files
+    gen:
+      go:
+        package: "db" # Go package name for generated code
+        out: "db/sqlc" # Output directory for generated Go files
+        emit_json_tags: true
+        emit_interface: true # Generate an interface for mocks
+        emit_exact_table_names: false
+        emit_empty_slices: true
