@@ -2,13 +2,16 @@
 package main
 
 import (
+	"context"      // Package context defines the Context type.
 	"database/sql" // Package sql provides a generic interface around SQL databases.
-	"fmt"          // Package fmt implements formatted I/O with functions analogous to C's printf and scanf.
 	"log"          // Package log implements a simple logging package.
+	"net/http"     // Package http provides HTTP client and server implementations.
 	"os"           // Package os provides a platform-independent interface to operating system functionality.
 
-	"github.com/gin-gonic/gin" // Gin is a HTTP web framework written in Go (Golang). It features a Martini-like API with much better performance -- up to 40 times faster. If you need smashing performance, get yourself some Gin.
-	_ "github.com/lib/pq"      // postgres driver - _ "github.com/lib/pq" imports the postgres driver package, making its database/sql driver available.
+	"github.com/gin-gonic/gin" // Gin is a HTTP web framework written in Go.
+	_ "github.com/lib/pq"      // postgres driver.
+
+	db "websocket-simple-chat-app/db/sqlc" // Import the generated db package.
 )
 
 // Constants for database connection details.
@@ -17,50 +20,90 @@ const dbDataSourceName = "postgres://postgres:159159@localhost:5432/chat_app_db?
 
 // main is the main function, the entry point of the application.
 func main() {
-	// gin.Default() creates a Gin router with default middleware:
-	// logger and recovery (crash-free) middleware.
+	// gin.Default() creates a Gin router with default middleware.
 	r := gin.Default()
 
-	// sql.Open() opens a database specified by its database driver name and a
-	// driver-specific data source name, usually consisting of at least a database name and
-	// connection information.
-	db, err := sql.Open(dbDriverName, dbDataSourceName)
+	// sql.Open() opens a database connection.
+	dbConn, err := sql.Open(dbDriverName, dbDataSourceName)
 	if err != nil {
-		// log.Fatal() prints the error and then calls os.Exit(1).
 		log.Fatal("cannot connect to db:", err)
 	}
-	// defer db.Close() schedules the call to db.Close() to be run after the surrounding
-	// function exits. This is important to close the database connection and release resources.
-	defer db.Close()
+	defer dbConn.Close() // Close the database connection when main function exits.
 
-	// db.Ping() verifies if the database connection is still alive, establishing a connection if necessary.
-	err = db.Ping()
-	if err != nil {
-		log.Fatal("cannot ping db:", err)
-	}
-	fmt.Println("DB connection successful") // Print to console if database connection is successful.
+	// db.New function creates a new Queries struct for database queries.
+	store := db.New(dbConn)
 
-	// r.GET("/ping", ...) defines a handler for GET requests to the "/ping" path.
+	// Define route for ping test.
 	r.GET("/ping", func(c *gin.Context) {
-		// c.JSON(200, gin.H{...}) responds with a JSON payload and HTTP status code 200 (OK).
-		c.JSON(200, gin.H{
-			"message": "pong", // The JSON response body will be {"message": "pong"}.
-		})
+		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
 
-	// --- Port Configuration ---
+	// Define route for user registration.
+	r.POST("/users", func(c *gin.Context) {
+		// Define struct for registration request data.
+		type createUserRequest struct {
+			Username string `json:"username" binding:"required"`
+			Password string `json:"password" binding:"required"`
+		}
+		var req createUserRequest
+		// Bind request body to createUserRequest struct.
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Create user in the database.
+		user, err := store.CreateUser(context.Background(), db.CreateUserParams{
+			Username:          req.Username,
+			PasswordPlaintext: req.Password, // TODO: Hash the password in real application.
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create user"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "User created", "user_id": user.ID})
+	})
+
+	// Define route for user login.
+	r.POST("/login", func(c *gin.Context) {
+		// Define struct for login request data.
+		type loginUserRequest struct {
+			Username string `json:"username" binding:"required"`
+			Password string `json:"password" binding:"required"`
+		}
+		var req loginUserRequest
+		// Bind request body to loginUserRequest struct.
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Get user by username from database.
+		user, err := store.GetUserByUsername(context.Background(), req.Username)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to login"})
+			return
+		}
+
+		// Check password (plaintext comparison for now).
+		if user.PasswordPlaintext != req.Password {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Logged in successfully", "user_id": user.ID})
+	})
+
 	// Get the port from the environment variable "PORT".
-	// Environment variables are a set of dynamic named values that can affect the way running processes will behave on a computer.
-	// Here, we are checking if an environment variable named "PORT" is set. This is a common practice in cloud environments
-	// where the port for applications is often configured externally.
 	port := os.Getenv("PORT")
-	// If the PORT environment variable is not set (i.e., it's an empty string),
-	// we default to port 8080. This is a common default port for web applications.
 	if port == "" {
 		port = "8080" // Default port if not specified in environment variables.
 	}
-	// r.Run(":" + port) starts the Gin HTTP server on the specified port.
-	// The ":" before the port number in ":8080" tells Gin to listen on all available network interfaces (all IP addresses)
-	// on port 8080. If you wanted to bind to a specific IP address, you would include it before the colon, e.g., "127.0.0.1:8080"
+	// Start the Gin HTTP server.
 	r.Run(":" + port)
 }
