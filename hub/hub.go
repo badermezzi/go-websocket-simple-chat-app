@@ -6,17 +6,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Hub maintains the set of active clients and broadcasts messages.
 type Hub struct {
-	// Registered clients. The outer map key is the userID,
-	// the inner map stores the set of active connections for that user.
 	clients map[int32]map[*websocket.Conn]bool
 
-	// Mutex to protect concurrent access to clients map.
 	mu sync.RWMutex
 }
 
-// NewHub creates a new Hub instance.
 func NewHub() *Hub {
 	return &Hub{
 		clients: make(map[int32]map[*websocket.Conn]bool),

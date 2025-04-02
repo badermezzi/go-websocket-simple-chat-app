@@ -5,25 +5,24 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
-	"os"
-	"strings" // Import strings package
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
 
-	"time" // Import time package for token duration
+	"time"
 	db "websocket-simple-chat-app/db/sqlc"
-	"websocket-simple-chat-app/hub"   // Import the hub package
-	"websocket-simple-chat-app/token" // Import the token package
+	"websocket-simple-chat-app/hub"
+	"websocket-simple-chat-app/token"
 )
 
 const dbDriverName = "postgres"
 const dbDataSourceName = "postgres://postgres:159159@localhost:5432/chat_app_db?sslmode=disable"
 
-// TODO: Load configuration properly (e.g., from env vars or file)
-const pasetoSymmetricKey = "12345678901234567890123456789012" // 32 bytes! Replace with secure key management
-const accessTokenDuration = time.Hour * 24                    // Example duration
+const pasetoSymmetricKey = "12345678901234567890123456789012"
+const accessTokenDuration = time.Hour * 24
+
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true
@@ -31,12 +30,8 @@ var upgrader = websocket.Upgrader{
 }
 
 func main() {
-	// Create a new connection hub
 	connectionHub := hub.NewHub()
 
-	// TODO: Load symmetric key from config/env variable
-	// Key must be exactly 32 bytes.
-	// Create Paseto Maker
 	pasetoMaker, err := token.NewPasetoMaker([]byte(pasetoSymmetricKey))
 	if err != nil {
 		log.Fatalf("cannot create paseto maker: %v", err)
@@ -50,7 +45,7 @@ func main() {
 	}
 	defer dbConn.Close()
 
-	// Set all users to offline on startup
+	// !!!!!!!!! dir update l query, "where status=online", but at the same time add status as index in the db table, this wil lower the job time and resources
 	_, err = dbConn.Exec("UPDATE users SET status = 'offline'")
 	if err != nil {
 		// Log the error but don't necessarily stop the server
@@ -239,9 +234,11 @@ func main() {
 		}
 	})
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-	r.Run(":" + port)
+	r.Run(":8080")
+
+	// port := os.Getenv("PORT")
+	// if port == "" {
+	// 	port = "8080"
+	// }
+	// r.Run(":" + port)
 }
