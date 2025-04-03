@@ -57,4 +57,23 @@ func (h *Hub) Unregister(userID int32, conn *websocket.Conn) bool {
 	return isLastConnection
 }
 
+// GetUserConnections returns a slice of active connections for a given user.
+// It returns an empty slice if the user is not connected or not found.
+func (h *Hub) GetUserConnections(userID int32) []*websocket.Conn {
+	h.mu.RLock() // Use Read Lock for reading
+	defer h.mu.RUnlock()
+
+	userConnectionsMap, ok := h.clients[userID]
+	if !ok {
+		return []*websocket.Conn{} // Return empty slice if user not found
+	}
+
+	// Create a slice to hold the connections
+	connections := make([]*websocket.Conn, 0, len(userConnectionsMap))
+	for conn := range userConnectionsMap {
+		connections = append(connections, conn)
+	}
+	return connections
+}
+
 // TODO: Add methods for broadcasting messages if needed later.

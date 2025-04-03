@@ -9,6 +9,7 @@ import (
 )
 
 type Querier interface {
+	CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error)
 	// db/query/user.sql
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	GetUserByID(ctx context.Context, id int32) (User, error)

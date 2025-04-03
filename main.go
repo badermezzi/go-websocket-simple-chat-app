@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json" // Added for handling JSON messages
 	"log"
 	"net/http"
 	"strings"
@@ -29,6 +30,23 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// --- WebSocket Message Structs ---
+
+// IncomingWsMessage defines the structure for messages received from clients
+type IncomingWsMessage struct {
+	Type        string `json:"type"`
+	RecipientID int32  `json:"recipient_id"` // Use int32 to match DB schema/sqlc types
+	Content     string `json:"content"`
+}
+
+// OutgoingWsMessage defines the structure for messages sent to clients
+type OutgoingWsMessage struct {
+	Type           string `json:"type"`
+	SenderID       int32  `json:"sender_id"`
+	SenderUsername string `json:"sender_username"`
+	Content        string `json:"content"`
+}
+
 func main() {
 	connectionHub := hub.NewHub()
 
@@ -46,7 +64,7 @@ func main() {
 	defer dbConn.Close()
 
 	// !!!!!!!!! dir update l query, "where status=online", but at the same time add status as index in the db table, this wil lower the job time and resources
-	_, err = dbConn.Exec("UPDATE users SET status = 'offline'")
+	_, err = dbConn.Exec("UPDATE users SET status = 'offline' WHERE status = 'online'") // Only update users currently online
 	if err != nil {
 		// Log the error but don't necessarily stop the server
 		log.Printf("Warning: Failed to set all users offline on startup: %v\n", err)
@@ -222,13 +240,78 @@ func main() {
 				}
 				break
 			}
-			log.Printf("Received message from %s (ID: %d): type=%d, payload=%s\n", username, userID, messageType, string(p))
+			// --- Handle Incoming Messages ---
+			if messageType == websocket.TextMessage {
+				var msg IncomingWsMessage
+				if err := json.Unmarshal(p, &msg); err != nil {
+					log.Printf("WS Error: Failed to unmarshal message from %s (ID: %d): %v. Payload: %s", username, userID, err, string(p))
+					// Optionally send an error back to the sender
+					// conn.WriteJSON(map[string]string{"error": "Invalid message format"})
+					continue // Skip this message
+				}
 
-			// TODO: Implement actual message handling/broadcasting logic here
-			// For now, just echoing back
-			if err := conn.WriteMessage(messageType, p); err != nil {
-				log.Printf("WS write error for user %s (ID: %d): %v\n", username, userID, err)
-				break
+				log.Printf("Parsed message from %s (ID: %d): Type=%s, RecipientID=%d", username, userID, msg.Type, msg.RecipientID)
+
+				// --- Handle Private Messages ---
+				if msg.Type == "private_message" {
+					// Basic validation
+					if msg.RecipientID <= 0 || msg.Content == "" {
+						log.Printf("WS Warning: Invalid private message from %s (ID: %d): RecipientID=%d, Content empty=%t", username, userID, msg.RecipientID, msg.Content == "")
+						// Optionally send an error back to the sender
+						// conn.WriteJSON(map[string]string{"error": "Invalid message content or recipient"})
+						continue
+					}
+
+					// 1. Store the message in the database
+					// Use the 'store' variable initialized earlier (line 55)
+					_, dbErr := store.CreateMessage(context.Background(), db.CreateMessageParams{
+						SenderID:   userID,          // Sender is the authenticated user of this connection
+						ReceiverID: msg.RecipientID, // Recipient from the message payload
+						Content:    msg.Content,
+					})
+					if dbErr != nil {
+						log.Printf("WS Error: Failed to store message from %d to %d: %v", userID, msg.RecipientID, dbErr)
+						// Optionally notify sender of storage failure
+						// conn.WriteJSON(map[string]string{"error": "Failed to save message"})
+						continue // Decide if we should stop processing or just log
+					}
+					log.Printf("Message from %d (%s) to %d stored successfully.", userID, username, msg.RecipientID)
+
+					// 2. Attempt real-time delivery if recipient is online
+					// Use the 'connectionHub' variable initialized earlier (line 33)
+					recipientConnections := connectionHub.GetUserConnections(msg.RecipientID)
+					if len(recipientConnections) > 0 {
+						outgoingMsg := OutgoingWsMessage{
+							Type:           "incoming_message",
+							SenderID:       userID,
+							SenderUsername: username, // Username from the authenticated token payload
+							Content:        msg.Content,
+						}
+						log.Printf("Attempting to send message from %d (%s) to %d (%d active connections)", userID, username, msg.RecipientID, len(recipientConnections))
+
+						// Send to all active connections for the recipient
+						for _, recipientConn := range recipientConnections {
+							// Use WriteJSON for convenience as we are sending a struct
+							if writeErr := recipientConn.WriteJSON(outgoingMsg); writeErr != nil {
+								log.Printf("WS Error: Failed to send message via WebSocket to user %d connection %p: %v", msg.RecipientID, recipientConn, writeErr)
+								// This specific connection might be broken. The read loop for *that* connection
+								// will likely handle its closure and unregister it via its defer function.
+								// We don't need to break the sender's loop here.
+							}
+						}
+					} else {
+						log.Printf("Recipient %d is offline. Message stored for later retrieval (feature not implemented).", msg.RecipientID)
+					}
+
+				} else {
+					// Handle other message types if needed in the future
+					log.Printf("WS Warning: Received unhandled message type '%s' from %s (ID: %d)", msg.Type, username, userID)
+					// Optionally send an error back: conn.WriteJSON(map[string]string{"error": "Unsupported message type"})
+				}
+
+			} else {
+				// Handle non-text messages (e.g., binary, ping, pong) if necessary
+				log.Printf("WS Warning: Received non-text message type %d from %s (ID: %d). Ignoring.", messageType, username, userID)
 			}
 		}
 	})
