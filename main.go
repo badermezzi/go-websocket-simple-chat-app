@@ -21,9 +21,9 @@ const dbDriverName = "postgres"
 const dbDataSourceName = "postgres://postgres:159159@localhost:5432/chat_app_db?sslmode=disable"
 
 const pasetoSymmetricKey = "12345678901234567890123456789012"
-const accessTokenDuration = time.Hour * 24
 
 var upgrader = websocket.Upgrader{
+	//  This is okay for local development but a security risk in production. Normally, you'd check if the request origin is allowed.
 	CheckOrigin: func(r *http.Request) bool {
 		return true
 	},
@@ -109,8 +109,7 @@ func main() {
 			return
 		}
 
-		// Create Paseto token
-		tokenDuration := time.Hour // Token valid for 1 hour
+		tokenDuration := time.Hour
 		tokenStr, payload, err := pasetoMaker.CreateToken(
 			user.ID,
 			user.Username,
@@ -161,6 +160,7 @@ func main() {
 			conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "invalid authorization header format"))
 			return
 		}
+
 		tokenStr := fields[1]
 
 		payload, err := pasetoMaker.VerifyToken(tokenStr)
@@ -220,7 +220,6 @@ func main() {
 				} else {
 					log.Printf("WS connection closed normally for user %s (ID: %d)\n", username, userID)
 				}
-				// The deferred Unregister function will handle status updates
 				break
 			}
 			log.Printf("Received message from %s (ID: %d): type=%d, payload=%s\n", username, userID, messageType, string(p))

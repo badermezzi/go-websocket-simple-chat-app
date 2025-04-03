@@ -44,17 +44,13 @@ func (h *Hub) Unregister(userID int32, conn *websocket.Conn) bool {
 
 	userConnections, ok := h.clients[userID]
 	if !ok {
-		// User not found, should not happen in normal flow but handle defensively.
 		return false
 	}
 
-	// Remove the specific connection.
 	delete(userConnections, conn)
 
-	// Check if this was the last connection for the user.
 	isLastConnection := len(userConnections) == 0
 	if isLastConnection {
-		// Optional: Clean up the outer map entry if the user has no more connections.
 		delete(h.clients, userID)
 	}
 
