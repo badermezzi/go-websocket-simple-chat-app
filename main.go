@@ -6,8 +6,8 @@ import (
 	"encoding/json" // Added for handling JSON messages
 	"log"
 	"net/http"
-	"strings"
 
+	"github.com/gin-contrib/cors" // Import CORS middleware
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq"
@@ -56,6 +56,21 @@ func main() {
 	}
 
 	r := gin.Default()
+
+	// --- CORS Middleware Configuration ---
+	config := cors.Config{
+		// Allow requests from your frontend origin
+		AllowOrigins: []string{"http://localhost:5173"},
+		// Allow common methods
+		AllowMethods: []string{"GET", "POST", "OPTIONS"},
+		// Allow common headers, including Authorization for WebSocket
+		AllowHeaders: []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		// Allow credentials if needed (e.g., cookies, though not used here yet)
+		AllowCredentials: true,
+		// MaxAge specifies how long the result of a preflight request can be cached
+		MaxAge: 12 * time.Hour,
+	}
+	r.Use(cors.New(config)) // Apply CORS middleware globally
 
 	dbConn, err := sql.Open(dbDriverName, dbDataSourceName)
 	if err != nil {
@@ -164,22 +179,13 @@ func main() {
 		}
 		defer conn.Close() // Ensure connection is closed eventually
 
-		// --- WebSocket Authentication via Authorization Header ---
-		authHeader := c.Request.Header.Get("Authorization")
-		if authHeader == "" {
-			log.Println("WS Error: Authorization header not provided")
-			conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "authorization header required"))
+		// --- WebSocket Authentication via Query Parameter ---
+		tokenStr := c.Query("token") // Read token from query parameter
+		if tokenStr == "" {
+			log.Println("WS Error: 'token' query parameter not provided")
+			conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "'token' query parameter required"))
 			return
 		}
-
-		fields := strings.Fields(authHeader)
-		if len(fields) < 2 || strings.ToLower(fields[0]) != "bearer" {
-			log.Println("WS Error: Invalid authorization header format")
-			conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "invalid authorization header format"))
-			return
-		}
-
-		tokenStr := fields[1]
 
 		payload, err := pasetoMaker.VerifyToken(tokenStr)
 		if err != nil {
