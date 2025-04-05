@@ -67,13 +67,42 @@ Base URL: `http://localhost:8080` (or configured port)
     ```json
     {
       "online_users": [
-        "string", // List of usernames
-        "string",
-        ...
+        {
+          "id": number,       // Integer ID of the online user
+          "username": "string" // Username of the online user
+        },
+        // ... more users
       ]
     }
     ```
 *   **Error Responses:** 500 Internal Server Error.
+
+### 4. Get Messages Between Users
+
+*   **Endpoint:** `GET /messages`
+*   **Description:** Retrieves the message history between the logged-in user and a specified partner user, ordered by newest first, with pagination.
+*   **Headers:**
+    *   `Authorization: Bearer <your_paseto_token>` (Required)
+*   **Query Parameters:**
+    *   `partner_id` (integer, Required): The ID of the user whose conversation history you want to fetch.
+    *   `page` (integer, Optional, Default: `1`): The page number of messages to retrieve.
+    *   `limit` (integer, Optional, Default: `20`): The maximum number of messages to return per page.
+*   **Request Body:** None.
+*   **Success Response (200 OK):**
+    ```json
+    [
+      {
+        "id": number,          // Message ID
+        "sender_id": number,   // Sender's user ID
+        "receiver_id": number, // Receiver's user ID
+        "content": "string",   // Message content
+        "created_at": "string" // Timestamp (RFC3339 or similar)
+      },
+      // ... more messages (up to limit), ordered newest first
+    ]
+    ```
+    *   Returns an empty array `[]` if no messages are found.
+*   **Error Responses:** 400 Bad Request (invalid parameters), 401 Unauthorized (invalid/missing token), 500 Internal Server Error.
 
 ## WebSocket Communication
 
@@ -105,3 +134,24 @@ Base URL: `http://localhost:8080` (or configured port)
       "sender_username": "string", // Username of the sender
       "content": "string"          // The message text received
     }
+    ```
+
+*   **Type:** `user_online`
+*   **Format (JSON Text Message):**
+    ```json
+    {
+      "type": "user_online",
+      "userId": number // Integer ID of the user who just came online
+    }
+    ```
+*   **Description:** Broadcast to all *other* connected clients when a user establishes their first WebSocket connection.
+
+*   **Type:** `user_offline`
+*   **Format (JSON Text Message):**
+    ```json
+    {
+      "type": "user_offline",
+      "userId": number // Integer ID of the user who just disconnected their last session
+    }
+    ```
+*   **Description:** Broadcast to all *remaining* connected clients when a user disconnects their last WebSocket connection.

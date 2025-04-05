@@ -4,8 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json" // Added for handling JSON messages
+	"errors"        // Added for error handling
+	"fmt"           // Added for error formatting
 	"log"
 	"net/http"
+	"strconv" // Added for query param conversion
+	"strings" // Added for header parsing
 
 	"github.com/gin-contrib/cors" // Import CORS middleware
 	"github.com/gin-gonic/gin"
@@ -46,6 +50,66 @@ type OutgoingWsMessage struct {
 	SenderUsername string `json:"sender_username"`
 	Content        string `json:"content"`
 }
+
+// UserStatusBroadcast defines the structure for user online/offline notifications
+type UserStatusBroadcast struct {
+	Type   string `json:"type"` // "user_online" or "user_offline"
+	UserID int32  `json:"userId"`
+}
+
+// OnlineUserInfo defines the structure for the /users/online endpoint response
+type OnlineUserInfo struct {
+	ID       int32  `json:"id"`
+	Username string `json:"username"`
+}
+
+// --- Gin Context Keys ---
+const (
+	authorizationHeaderKey  = "authorization"
+	authorizationTypeBearer = "bearer"
+	authorizationPayloadKey = "authorization_payload"
+)
+
+// --- Authentication Middleware ---
+
+// authMiddleware creates a gin middleware for authorization
+func authMiddleware(tokenMaker token.Maker) gin.HandlerFunc {
+	return func(ctx *gin.Context) {
+		authorizationHeader := ctx.GetHeader(authorizationHeaderKey)
+
+		if len(authorizationHeader) == 0 {
+			err := errors.New("authorization header is not provided")
+			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			return
+		}
+
+		fields := strings.Fields(authorizationHeader)
+		if len(fields) < 2 {
+			err := errors.New("invalid authorization header format")
+			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			return
+		}
+
+		authorizationType := strings.ToLower(fields[0])
+		if authorizationType != authorizationTypeBearer {
+			err := fmt.Errorf("unsupported authorization type %s", authorizationType)
+			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			return
+		}
+
+		accessToken := fields[1]
+		payload, err := tokenMaker.VerifyToken(accessToken)
+		if err != nil {
+			ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			return
+		}
+
+		ctx.Set(authorizationPayloadKey, payload)
+		ctx.Next()
+	}
+}
+
+// --- Main Function ---
 
 func main() {
 	connectionHub := hub.NewHub()
@@ -163,14 +227,24 @@ func main() {
 			return
 		}
 
-		var usernames []string
+		// Create a slice to hold the user info objects
+		var userInfos []OnlineUserInfo
 		for _, user := range onlineUsers {
-			usernames = append(usernames, user.Username)
+			userInfos = append(userInfos, OnlineUserInfo{
+				ID:       user.ID,
+				Username: user.Username,
+			})
 		}
 
-		c.JSON(http.StatusOK, gin.H{"online_users": usernames})
+		c.JSON(http.StatusOK, gin.H{"online_users": userInfos})
 	})
 
+	// --- Authenticated Routes ---
+	authRoutes := r.Group("/").Use(authMiddleware(pasetoMaker))
+
+	authRoutes.GET("/messages", getMessagesHandler(store)) // Pass store here for closure
+
+	// --- WebSocket Route (Separate Auth) ---
 	r.GET("/ws", func(c *gin.Context) {
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
@@ -212,6 +286,18 @@ func main() {
 				// Decide if we should close the connection here or just log
 			} else {
 				log.Printf("User %s (ID: %d) connected (first WS connection)\n", username, userID)
+
+				// --- Broadcast User Online Status ---
+				onlineMsg := UserStatusBroadcast{Type: "user_online", UserID: userID}
+				jsonMsg, marshalErr := json.Marshal(onlineMsg)
+				if marshalErr != nil {
+					log.Printf("WS Error: Failed to marshal user_online message for user %d: %v", userID, marshalErr)
+				} else {
+					// Broadcast to everyone *except* the user who just connected
+					connectionHub.Broadcast(jsonMsg, userID)
+					log.Printf("Broadcasted user_online for User %s (ID: %d)", username, userID)
+				}
+				// --- End Broadcast ---
 			}
 		} else {
 			log.Printf("User %s (ID: %d) connected (additional WS connection)\n", username, userID)
@@ -229,6 +315,18 @@ func main() {
 					log.Printf("WS Error: Failed to update user %d status to offline on disconnect: %v\n", userID, err)
 				} else {
 					log.Printf("User %s (ID: %d) disconnected (last WS connection)\n", username, userID)
+
+					// --- Broadcast User Offline Status ---
+					offlineMsg := UserStatusBroadcast{Type: "user_offline", UserID: userID}
+					jsonMsg, marshalErr := json.Marshal(offlineMsg)
+					if marshalErr != nil {
+						log.Printf("WS Error: Failed to marshal user_offline message for user %d: %v", userID, marshalErr)
+					} else {
+						// Broadcast to all remaining clients (no exclusion needed)
+						connectionHub.Broadcast(jsonMsg, 0) // excludeUserID 0 means no exclusion
+						log.Printf("Broadcasted user_offline for User %s (ID: %d)", username, userID)
+					}
+					// --- End Broadcast ---
 				}
 			} else {
 				log.Printf("User %s (ID: %d) disconnected (still has other WS connections)\n", username, userID)
@@ -329,4 +427,78 @@ func main() {
 	// 	port = "8080"
 	// }
 	// r.Run(":" + port)
+}
+
+// --- Handler Functions ---
+
+// getMessagesHandler uses closure to access the store variable from main
+func getMessagesHandler(store *db.Queries) gin.HandlerFunc { // Use the concrete type *db.Queries (assuming this is what db.New returns)
+	return func(c *gin.Context) {
+		// 1. Get authenticated user from context
+		authPayload, exists := c.Get(authorizationPayloadKey)
+		if !exists {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Authorization payload not found in context"}) // Should not happen if middleware is correct
+			return
+		}
+		payload := authPayload.(*token.Payload) // Type assertion
+		loggedInUserID := payload.UserID
+
+		// 2. Get partner_id from query string
+		partnerIDStr := c.Query("partner_id")
+		if partnerIDStr == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing 'partner_id' query parameter"})
+			return
+		}
+		partnerID, err := strconv.ParseInt(partnerIDStr, 10, 32)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid 'partner_id' format"})
+			return
+		}
+
+		// 3. Get pagination parameters (page, limit)
+		pageStr := c.DefaultQuery("page", "1")
+		limitStr := c.DefaultQuery("limit", "20") // Default limit 20 messages
+
+		page, err := strconv.ParseInt(pageStr, 10, 32)
+		if err != nil || page < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid 'page' format"})
+			return
+		}
+
+		limit, err := strconv.ParseInt(limitStr, 10, 32)
+		if err != nil || limit < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid 'limit' format"})
+			return
+		}
+
+		// 4. Calculate offset
+		offset := (int32(page) - 1) * int32(limit)
+
+		// 5. Call store function
+		// Use the 'store' variable captured by the closure
+		messages, err := store.GetMessagesBetweenUsers(context.Background(), db.GetMessagesBetweenUsersParams{
+			SenderID:   loggedInUserID,
+			ReceiverID: int32(partnerID),
+			Limit:      int32(limit),
+			Offset:     offset, // Use the calculated offset
+		})
+		if err != nil {
+			if err == sql.ErrNoRows {
+				// Return empty list if no messages found, not an error
+				c.JSON(http.StatusOK, []db.Message{})
+				return
+			}
+			log.Printf("Error fetching messages between %d and %d: %v", loggedInUserID, partnerID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve messages"})
+			return
+		}
+
+		// Handle case where messages might be nil from the DB query if no rows found
+		if messages == nil {
+			messages = []db.Message{}
+		}
+
+		// 6. Return messages
+		c.JSON(http.StatusOK, messages)
+	}
 }

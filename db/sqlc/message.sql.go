@@ -37,3 +37,53 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 	)
 	return i, err
 }
+
+const getMessagesBetweenUsers = `-- name: GetMessagesBetweenUsers :many
+SELECT id, sender_id, receiver_id, content, created_at FROM messages
+WHERE (sender_id = $1 AND receiver_id = $2)
+   OR (sender_id = $2 AND receiver_id = $1)
+ORDER BY created_at DESC -- Order by newest first for pagination
+LIMIT $3 -- Page size
+OFFSET $4
+`
+
+type GetMessagesBetweenUsersParams struct {
+	SenderID   int32 `json:"sender_id"`
+	ReceiverID int32 `json:"receiver_id"`
+	Limit      int32 `json:"limit"`
+	Offset     int32 `json:"offset"`
+}
+
+func (q *Queries) GetMessagesBetweenUsers(ctx context.Context, arg GetMessagesBetweenUsersParams) ([]Message, error) {
+	rows, err := q.db.QueryContext(ctx, getMessagesBetweenUsers,
+		arg.SenderID,
+		arg.ReceiverID,
+		arg.Limit,
+		arg.Offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Message{}
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.SenderID,
+			&i.ReceiverID,
+			&i.Content,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

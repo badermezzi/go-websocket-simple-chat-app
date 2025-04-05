@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"log" // Added for logging in Broadcast
 	"sync"
 
 	"github.com/gorilla/websocket"
@@ -76,4 +77,31 @@ func (h *Hub) GetUserConnections(userID int32) []*websocket.Conn {
 	return connections
 }
 
-// TODO: Add methods for broadcasting messages if needed later.
+// Broadcast sends a message to all connected clients, optionally excluding one user.
+// If excludeUserID is 0 or a non-existent ID, the message is sent to everyone.
+func (h *Hub) Broadcast(message []byte, excludeUserID int32) {
+	h.mu.RLock() // Use Read Lock as we are only reading the client list
+	defer h.mu.RUnlock()
+
+	for userID, userConnections := range h.clients {
+		if userID == excludeUserID {
+			continue // Skip the excluded user
+		}
+
+		for conn := range userConnections {
+			// Use a separate goroutine for each write to avoid blocking the broadcast loop
+			// if one connection is slow or unresponsive.
+			go func(c *websocket.Conn) {
+				// It's generally safer to use WriteMessage within its own lock if the connection
+				// object itself isn't inherently thread-safe for concurrent writes,
+				// although Gorilla WebSocket's default implementation usually handles this.
+				// However, for simplicity here, we assume concurrent writes are safe or handled by the library.
+				if err := c.WriteMessage(websocket.TextMessage, message); err != nil {
+					// Log the error, but don't stop broadcasting to others.
+					// The connection's own read loop should handle the disconnection.
+					log.Printf("Broadcast Error: Failed to write message to user %d connection %p: %v", userID, c, err)
+				}
+			}(conn)
+		}
+	}
+}
