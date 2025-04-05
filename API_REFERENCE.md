@@ -77,10 +77,9 @@ Base URL: `http://localhost:8080` (or configured port)
 
 ## WebSocket Communication
 
-*   **Endpoint:** `GET /ws` (Upgrades to WebSocket connection)
-*   **Description:** Establishes a persistent WebSocket connection for real-time communication.
-*   **Required Header (for initial HTTP Upgrade request):**
-    *   `Authorization: Bearer <your_paseto_token>` (Replace `<your_paseto_token>` with the token obtained from `/login`)
+*   **Endpoint:** `GET /ws?token=<your_paseto_token>` (Upgrades to WebSocket connection)
+*   **Description:** Establishes a persistent WebSocket connection for real-time communication. The authentication token obtained from `/login` must be provided as the `token` query parameter in the connection URL.
+*   **Example URL:** `wss://your.api.domain/ws?token=YOUR_ACTUAL_TOKEN` (Replace `wss://your.api.domain` with the actual server address and `YOUR_ACTUAL_TOKEN` with the token)
 *   **Connection:** Once established, the connection stays open for bidirectional communication.
 
 ### WebSocket Messages (Client -> Server)
