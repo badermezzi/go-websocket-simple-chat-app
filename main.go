@@ -63,6 +63,28 @@ type OnlineUserInfo struct {
 	Username string `json:"username"`
 }
 
+// --- Specific WebSocket Message Payloads ---
+
+// TypingIndicatorMessage is used for both incoming and outgoing typing status
+type TypingIndicatorMessage struct {
+	Type        string `json:"type"`         // "typing_start" or "typing_stop"
+	RecipientID int32  `json:"recipient_id"` // User receiving the indicator
+	SenderID    int32  `json:"sender_id"`    // User sending the indicator (added for outgoing)
+}
+
+// MessageReadMessage is sent by the client when messages from a sender are read
+type MessageReadMessage struct {
+	Type     string `json:"type"`      // "message_read"
+	SenderID int32  `json:"sender_id"` // ID of the user whose messages were read
+}
+
+// ReadReceiptUpdateMessage is sent by the server to the original sender
+type ReadReceiptUpdateMessage struct {
+	Type     string `json:"type"`      // "read_receipt_update"
+	ReaderID int32  `json:"reader_id"` // ID of the user who read the messages (the current user)
+	SenderID int32  `json:"sender_id"` // ID of the user whose messages were read
+}
+
 // --- Gin Context Keys ---
 const (
 	authorizationHeaderKey  = "authorization"
@@ -239,6 +261,9 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"online_users": userInfos})
 	})
 
+	// Endpoint to list offline users
+	r.GET("/users/offline", getOfflineUsersHandler(store))
+
 	// --- Authenticated Routes ---
 	authRoutes := r.Group("/").Use(authMiddleware(pasetoMaker))
 
@@ -346,71 +371,134 @@ func main() {
 			}
 			// --- Handle Incoming Messages ---
 			if messageType == websocket.TextMessage {
-				var msg IncomingWsMessage
-				if err := json.Unmarshal(p, &msg); err != nil {
-					log.Printf("WS Error: Failed to unmarshal message from %s (ID: %d): %v. Payload: %s", username, userID, err, string(p))
-					// Optionally send an error back to the sender
-					// conn.WriteJSON(map[string]string{"error": "Invalid message format"})
-					continue // Skip this message
+				// 1. Unmarshal into a generic map to check the type first
+				var genericMsg map[string]interface{}
+				if err := json.Unmarshal(p, &genericMsg); err != nil {
+					log.Printf("WS Error: Failed to unmarshal generic message from %s (ID: %d): %v. Payload: %s", username, userID, err, string(p))
+					continue
 				}
 
-				log.Printf("Parsed message from %s (ID: %d): Type=%s, RecipientID=%d", username, userID, msg.Type, msg.RecipientID)
+				// 2. Check the message type
+				msgType, ok := genericMsg["type"].(string)
+				if !ok {
+					log.Printf("WS Error: Message type is missing or not a string from %s (ID: %d). Payload: %s", username, userID, string(p))
+					continue
+				}
 
-				// --- Handle Private Messages ---
-				if msg.Type == "private_message" {
+				log.Printf("Received message type '%s' from %s (ID: %d)", msgType, username, userID)
+
+				// 3. Handle based on type
+				switch msgType {
+				case "private_message":
+					var msg IncomingWsMessage
+					if err := json.Unmarshal(p, &msg); err != nil { // Unmarshal again into specific struct
+						log.Printf("WS Error: Failed to unmarshal private_message: %v. Payload: %s", err, string(p))
+						continue
+					}
 					// Basic validation
 					if msg.RecipientID <= 0 || msg.Content == "" {
 						log.Printf("WS Warning: Invalid private message from %s (ID: %d): RecipientID=%d, Content empty=%t", username, userID, msg.RecipientID, msg.Content == "")
-						// Optionally send an error back to the sender
-						// conn.WriteJSON(map[string]string{"error": "Invalid message content or recipient"})
 						continue
 					}
-
 					// 1. Store the message in the database
-					// Use the 'store' variable initialized earlier (line 55)
 					_, dbErr := store.CreateMessage(context.Background(), db.CreateMessageParams{
-						SenderID:   userID,          // Sender is the authenticated user of this connection
-						ReceiverID: msg.RecipientID, // Recipient from the message payload
+						SenderID:   userID,
+						ReceiverID: msg.RecipientID,
 						Content:    msg.Content,
 					})
 					if dbErr != nil {
 						log.Printf("WS Error: Failed to store message from %d to %d: %v", userID, msg.RecipientID, dbErr)
-						// Optionally notify sender of storage failure
-						// conn.WriteJSON(map[string]string{"error": "Failed to save message"})
-						continue // Decide if we should stop processing or just log
+						continue
 					}
 					log.Printf("Message from %d (%s) to %d stored successfully.", userID, username, msg.RecipientID)
-
 					// 2. Attempt real-time delivery if recipient is online
-					// Use the 'connectionHub' variable initialized earlier (line 33)
 					recipientConnections := connectionHub.GetUserConnections(msg.RecipientID)
 					if len(recipientConnections) > 0 {
 						outgoingMsg := OutgoingWsMessage{
 							Type:           "incoming_message",
 							SenderID:       userID,
-							SenderUsername: username, // Username from the authenticated token payload
+							SenderUsername: username,
 							Content:        msg.Content,
 						}
+						jsonMsg, marshalErr := json.Marshal(outgoingMsg)
+						if marshalErr != nil {
+							log.Printf("WS Error: Failed to marshal outgoing private message: %v", marshalErr)
+							continue // Skip sending if marshalling fails
+						}
 						log.Printf("Attempting to send message from %d (%s) to %d (%d active connections)", userID, username, msg.RecipientID, len(recipientConnections))
-
-						// Send to all active connections for the recipient
 						for _, recipientConn := range recipientConnections {
-							// Use WriteJSON for convenience as we are sending a struct
-							if writeErr := recipientConn.WriteJSON(outgoingMsg); writeErr != nil {
+							if writeErr := recipientConn.WriteMessage(websocket.TextMessage, jsonMsg); writeErr != nil {
 								log.Printf("WS Error: Failed to send message via WebSocket to user %d connection %p: %v", msg.RecipientID, recipientConn, writeErr)
-								// This specific connection might be broken. The read loop for *that* connection
-								// will likely handle its closure and unregister it via its defer function.
-								// We don't need to break the sender's loop here.
 							}
 						}
 					} else {
-						log.Printf("Recipient %d is offline. Message stored for later retrieval (feature not implemented).", msg.RecipientID)
+						log.Printf("Recipient %d is offline. Message stored.", msg.RecipientID)
 					}
 
-				} else {
-					// Handle other message types if needed in the future
-					log.Printf("WS Warning: Received unhandled message type '%s' from %s (ID: %d)", msg.Type, username, userID)
-					// Optionally send an error back: conn.WriteJSON(map[string]string{"error": "Unsupported message type"})
+				case "typing_start", "typing_stop":
+					var msg TypingIndicatorMessage
+					if err := json.Unmarshal(p, &msg); err != nil {
+						log.Printf("WS Error: Failed to unmarshal typing indicator: %v. Payload: %s", err, string(p))
+						continue
+					}
+					// Basic validation
+					if msg.RecipientID <= 0 {
+						log.Printf("WS Warning: Invalid typing indicator from %s (ID: %d): RecipientID=%d", username, userID, msg.RecipientID)
+						continue
+					}
+					// Add SenderID for forwarding
+					msg.SenderID = userID
+					// Marshal for sending
+					jsonMsg, marshalErr := json.Marshal(msg)
+					if marshalErr != nil {
+						log.Printf("WS Error: Failed to marshal outgoing typing indicator: %v", marshalErr)
+						continue
+					}
+					// Get recipient connections
+					recipientConnections := connectionHub.GetUserConnections(msg.RecipientID)
+					// Send to recipient
+					for _, recipientConn := range recipientConnections {
+						if writeErr := recipientConn.WriteMessage(websocket.TextMessage, jsonMsg); writeErr != nil {
+							log.Printf("WS Error: Failed to send typing indicator to user %d: %v", msg.RecipientID, writeErr)
+						}
+					}
+					log.Printf("Forwarded %s indicator from %d to %d", msg.Type, userID, msg.RecipientID)
+
+				case "message_read":
+					var msg MessageReadMessage
+					if err := json.Unmarshal(p, &msg); err != nil {
+						log.Printf("WS Error: Failed to unmarshal message_read: %v. Payload: %s", err, string(p))
+						continue
+					}
+					// Basic validation
+					if msg.SenderID <= 0 {
+						log.Printf("WS Warning: Invalid message_read from %s (ID: %d): SenderID=%d", username, userID, msg.SenderID)
+						continue
+					}
+					// Prepare the update message for the original sender
+					updateMsg := ReadReceiptUpdateMessage{
+						Type:     "read_receipt_update",
+						ReaderID: userID,       // The current user read the message
+						SenderID: msg.SenderID, // The user whose messages were read
+					}
+					// Marshal for sending
+					jsonMsg, marshalErr := json.Marshal(updateMsg)
+					if marshalErr != nil {
+						log.Printf("WS Error: Failed to marshal read_receipt_update: %v", marshalErr)
+						continue
+					}
+					// Get original sender's connections
+					senderConnections := connectionHub.GetUserConnections(msg.SenderID)
+					// Send update to original sender
+					for _, senderConn := range senderConnections {
+						if writeErr := senderConn.WriteMessage(websocket.TextMessage, jsonMsg); writeErr != nil {
+							log.Printf("WS Error: Failed to send read receipt update to user %d: %v", msg.SenderID, writeErr)
+						}
+					}
+					log.Printf("Sent read receipt update for sender %d from reader %d", msg.SenderID, userID)
+
+				default:
+					log.Printf("WS Warning: Received unhandled message type '%s' from %s (ID: %d)", msgType, username, userID)
 				}
 
 			} else {
@@ -500,5 +588,33 @@ func getMessagesHandler(store *db.Queries) gin.HandlerFunc { // Use the concrete
 
 		// 6. Return messages
 		c.JSON(http.StatusOK, messages)
+	}
+}
+
+// --- Handler for listing offline users ---
+func getOfflineUsersHandler(store *db.Queries) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		offlineUsers, err := store.ListOfflineUsers(context.Background())
+		if err != nil {
+			log.Printf("Error fetching offline users: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list offline users"})
+			return
+		}
+
+		// Format response similar to /users/online
+		var userInfos []OnlineUserInfo // Re-use the same struct
+		for _, user := range offlineUsers {
+			userInfos = append(userInfos, OnlineUserInfo{
+				ID:       user.ID,
+				Username: user.Username,
+			})
+		}
+
+		// Handle case where userInfos might be nil if no offline users found
+		if userInfos == nil {
+			userInfos = []OnlineUserInfo{}
+		}
+
+		c.JSON(http.StatusOK, gin.H{"offline_users": userInfos})
 	}
 }

@@ -15,6 +15,7 @@ type Querier interface {
 	GetMessagesBetweenUsers(ctx context.Context, arg GetMessagesBetweenUsersParams) ([]Message, error)
 	GetUserByID(ctx context.Context, id int32) (User, error)
 	GetUserByUsername(ctx context.Context, username string) (User, error)
+	ListOfflineUsers(ctx context.Context) ([]ListOfflineUsersRow, error)
 	ListOnlineUsers(ctx context.Context) ([]ListOnlineUsersRow, error)
 	UpdateUserStatus(ctx context.Context, arg UpdateUserStatusParams) error
 }

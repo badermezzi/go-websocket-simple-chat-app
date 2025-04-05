@@ -74,6 +74,40 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User,
 	return i, err
 }
 
+const listOfflineUsers = `-- name: ListOfflineUsers :many
+SELECT id, username FROM users
+WHERE status = 'offline'
+ORDER BY username
+`
+
+type ListOfflineUsersRow struct {
+	ID       int32  `json:"id"`
+	Username string `json:"username"`
+}
+
+func (q *Queries) ListOfflineUsers(ctx context.Context) ([]ListOfflineUsersRow, error) {
+	rows, err := q.db.QueryContext(ctx, listOfflineUsers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOfflineUsersRow{}
+	for rows.Next() {
+		var i ListOfflineUsersRow
+		if err := rows.Scan(&i.ID, &i.Username); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOnlineUsers = `-- name: ListOnlineUsers :many
 SELECT id, username FROM users
 WHERE status = 'online'

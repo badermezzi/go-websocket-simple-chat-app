@@ -25,3 +25,8 @@ WHERE id = $1;
 SELECT id, username FROM users
 WHERE status = 'online'
 ORDER BY username;
+
+-- name: ListOfflineUsers :many
+SELECT id, username FROM users
+WHERE status = 'offline'
+ORDER BY username;
