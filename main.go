@@ -146,7 +146,8 @@ func main() {
 	// --- CORS Middleware Configuration ---
 	config := cors.Config{
 		// Allow requests from your frontend origin
-		AllowOrigins: []string{"http://localhost:5173"},
+		// Allow requests from any origin (useful for development with file:// URLs)
+		AllowAllOrigins: true,
 		// Allow common methods
 		AllowMethods: []string{"GET", "POST", "OPTIONS"},
 		// Allow common headers, including Authorization for WebSocket
@@ -520,7 +521,8 @@ func main() {
 // --- Handler Functions ---
 
 // getMessagesHandler uses closure to access the store variable from main
-func getMessagesHandler(store *db.Queries) gin.HandlerFunc { // Use the concrete type *db.Queries (assuming this is what db.New returns)
+// Use the concrete type *db.Queries (assuming this is what db.New returns)
+func getMessagesHandler(store *db.Queries) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 1. Get authenticated user from context
 		authPayload, exists := c.Get(authorizationPayloadKey)
