@@ -373,7 +373,7 @@ func main() {
 			// --- Handle Incoming Messages ---
 			if messageType == websocket.TextMessage {
 				// 1. Unmarshal into a generic map to check the type first
-				var genericMsg map[string]interface{}
+				var genericMsg map[string]any
 				if err := json.Unmarshal(p, &genericMsg); err != nil {
 					log.Printf("WS Error: Failed to unmarshal generic message from %s (ID: %d): %v. Payload: %s", username, userID, err, string(p))
 					continue
