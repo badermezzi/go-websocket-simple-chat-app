@@ -85,6 +85,37 @@ type ReadReceiptUpdateMessage struct {
 	SenderID int32  `json:"sender_id"` // ID of the user whose messages were read
 }
 
+// OfferMessage defines the structure for WebRTC offer messages
+type OfferMessage struct {
+	Type       string          `json:"type"`  // "offer"
+	Offer      json.RawMessage `json:"offer"` // Use RawMessage to forward arbitrary JSON
+	SenderID   int32           `json:"senderId"`
+	ReceiverID int32           `json:"receiverId"`
+}
+
+// IceCandidateMessage defines the structure for WebRTC ICE candidate messages
+type IceCandidateMessage struct {
+	Type       string          `json:"type"`      // "ice-candidate"
+	Candidate  json.RawMessage `json:"candidate"` // Use RawMessage to forward arbitrary JSON
+	SenderID   int32           `json:"senderId"`
+	ReceiverID int32           `json:"receiverId"`
+}
+
+// HangupMessage defines the structure for call hangup messages
+type HangupMessage struct {
+	Type       string `json:"type"` // "hangup"
+	SenderID   int32  `json:"senderId"`
+	ReceiverID int32  `json:"receiverId"`
+}
+
+// AnswerMessage defines the structure for WebRTC answer messages
+type AnswerMessage struct {
+	Type       string          `json:"type"`   // "answer"
+	Answer     json.RawMessage `json:"answer"` // Use RawMessage to forward arbitrary JSON
+	SenderID   int32           `json:"senderId"`
+	ReceiverID int32           `json:"receiverId"`
+}
+
 // --- Gin Context Keys ---
 const (
 	authorizationHeaderKey  = "authorization"
@@ -496,6 +527,122 @@ func main() {
 						}
 					}
 					log.Printf("Sent read receipt update for sender %d from reader %d", msg.SenderID, userID)
+
+				case "offer":
+					var msg OfferMessage
+					if err := json.Unmarshal(p, &msg); err != nil {
+						log.Printf("WS Error: Failed to unmarshal 'offer' message from %s (ID: %d): %v. Payload: %s", username, userID, err, string(p))
+						continue
+					}
+
+					// Basic validation: Ensure a recipient is specified
+					if msg.ReceiverID <= 0 {
+						log.Printf("WS Warning: Invalid 'offer' message from %s (ID: %d): Missing or invalid ReceiverID=%d", username, userID, msg.ReceiverID)
+						continue
+					}
+
+					// Get recipient's connections
+					recipientConnections := connectionHub.GetUserConnections(msg.ReceiverID)
+					if len(recipientConnections) == 0 {
+						log.Printf("WS Info: Recipient %d for 'offer' message from %d is offline or has no connections.", msg.ReceiverID, userID)
+						continue // Skip if recipient is not connected
+					}
+
+					// Forward the original raw message payload 'p' to the recipient
+					log.Printf("Forwarding 'offer' message from %d (%s) to %d (%d connections)", userID, username, msg.ReceiverID, len(recipientConnections))
+					for _, recipientConn := range recipientConnections {
+						if writeErr := recipientConn.WriteMessage(websocket.TextMessage, p); writeErr != nil {
+							log.Printf("WS Error: Failed to forward 'offer' message to user %d connection %p: %v", msg.ReceiverID, recipientConn, writeErr)
+							// If writing fails, the connection might be dead. The read loop for that connection should eventually handle its cleanup.
+						}
+					}
+
+				case "ice-candidate":
+					var msg IceCandidateMessage
+					if err := json.Unmarshal(p, &msg); err != nil {
+						log.Printf("WS Error: Failed to unmarshal 'ice-candidate' message from %s (ID: %d): %v. Payload: %s", username, userID, err, string(p))
+						continue
+					}
+
+					// Basic validation: Ensure a recipient is specified
+					if msg.ReceiverID <= 0 {
+						log.Printf("WS Warning: Invalid 'ice-candidate' message from %s (ID: %d): Missing or invalid ReceiverID=%d", username, userID, msg.ReceiverID)
+						continue
+					}
+
+					// Get recipient's connections
+					recipientConnections := connectionHub.GetUserConnections(msg.ReceiverID)
+					if len(recipientConnections) == 0 {
+						log.Printf("WS Info: Recipient %d for 'ice-candidate' message from %d is offline or has no connections.", msg.ReceiverID, userID)
+						continue // Skip if recipient is not connected
+					}
+
+					// Forward the original raw message payload 'p' to the recipient
+					log.Printf("Forwarding 'ice-candidate' message from %d (%s) to %d (%d connections)", userID, username, msg.ReceiverID, len(recipientConnections))
+					for _, recipientConn := range recipientConnections {
+						if writeErr := recipientConn.WriteMessage(websocket.TextMessage, p); writeErr != nil {
+							log.Printf("WS Error: Failed to forward 'ice-candidate' message to user %d connection %p: %v", msg.ReceiverID, recipientConn, writeErr)
+							// If writing fails, the connection might be dead. The read loop for that connection should eventually handle its cleanup.
+						}
+					}
+
+				case "hangup":
+					var msg HangupMessage
+					if err := json.Unmarshal(p, &msg); err != nil {
+						log.Printf("WS Error: Failed to unmarshal 'hangup' message from %s (ID: %d): %v. Payload: %s", username, userID, err, string(p))
+						continue
+					}
+
+					// Basic validation: Ensure a recipient is specified
+					if msg.ReceiverID <= 0 {
+						log.Printf("WS Warning: Invalid 'hangup' message from %s (ID: %d): Missing or invalid ReceiverID=%d", username, userID, msg.ReceiverID)
+						continue
+					}
+
+					// Get recipient's connections
+					recipientConnections := connectionHub.GetUserConnections(msg.ReceiverID)
+					if len(recipientConnections) == 0 {
+						log.Printf("WS Info: Recipient %d for 'hangup' message from %d is offline or has no connections.", msg.ReceiverID, userID)
+						continue // Skip if recipient is not connected
+					}
+
+					// Forward the original raw message payload 'p' to the recipient
+					log.Printf("Forwarding 'hangup' message from %d (%s) to %d (%d connections)", userID, username, msg.ReceiverID, len(recipientConnections))
+					for _, recipientConn := range recipientConnections {
+						if writeErr := recipientConn.WriteMessage(websocket.TextMessage, p); writeErr != nil {
+							log.Printf("WS Error: Failed to forward 'hangup' message to user %d connection %p: %v", msg.ReceiverID, recipientConn, writeErr)
+							// If writing fails, the connection might be dead. The read loop for that connection should eventually handle its cleanup.
+						}
+					}
+
+				case "answer":
+					var msg AnswerMessage
+					if err := json.Unmarshal(p, &msg); err != nil {
+						log.Printf("WS Error: Failed to unmarshal 'answer' message from %s (ID: %d): %v. Payload: %s", username, userID, err, string(p))
+						continue
+					}
+
+					// Basic validation: Ensure a recipient is specified
+					if msg.ReceiverID <= 0 {
+						log.Printf("WS Warning: Invalid 'answer' message from %s (ID: %d): Missing or invalid ReceiverID=%d", username, userID, msg.ReceiverID)
+						continue
+					}
+
+					// Get recipient's connections
+					recipientConnections := connectionHub.GetUserConnections(msg.ReceiverID)
+					if len(recipientConnections) == 0 {
+						log.Printf("WS Info: Recipient %d for 'answer' message from %d is offline or has no connections.", msg.ReceiverID, userID)
+						continue // Skip if recipient is not connected
+					}
+
+					// Forward the original raw message payload 'p' to the recipient
+					log.Printf("Forwarding 'answer' message from %d (%s) to %d (%d connections)", userID, username, msg.ReceiverID, len(recipientConnections))
+					for _, recipientConn := range recipientConnections {
+						if writeErr := recipientConn.WriteMessage(websocket.TextMessage, p); writeErr != nil {
+							log.Printf("WS Error: Failed to forward 'answer' message to user %d connection %p: %v", msg.ReceiverID, recipientConn, writeErr)
+							// If writing fails, the connection might be dead. The read loop for that connection should eventually handle its cleanup.
+						}
+					}
 
 				default:
 					log.Printf("WS Warning: Received unhandled message type '%s' from %s (ID: %d)", msgType, username, userID)
