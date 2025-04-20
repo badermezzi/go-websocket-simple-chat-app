@@ -165,7 +165,6 @@ func main() {
 	}
 	defer dbConn.Close()
 
-	// !!!!!!!!! dir update l query, "where status=online", but at the same time add status as index in the db table, this wil lower the job time and resources
 	_, err = dbConn.Exec("UPDATE users SET status = 'offline' WHERE status = 'online'") // Only update users currently online
 	if err != nil {
 		// Log the error but don't necessarily stop the server
